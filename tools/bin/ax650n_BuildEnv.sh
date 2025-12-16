@@ -15,3 +15,8 @@ M5STACK_BSP_SUPPORT_SOC="https://github.com/m5stack/LLM_buildroot-external-m5sta
 M5STACK_BSP_SUPPORT_SOC_SHA256="4ba132b9496445fd38e74173f61ff4311e55e671ea26096c2afe27ad78eb63ce"
 M5STACK_BSP_SUPPORT_OVERLAY="https://github.com/dianjixz/axerabin/releases/download/v0.0.1/rootfs_overlay_aipyramid.tar.gz"
 M5STACK_BSP_SUPPORT_OVERLAY_SHA256="bfdd0a315576226d2ebe1fc74bacafb878f6b2ea7507d4df7d54bf9cef7865ff"
+
+M5STACK_BSP_SUPPORT_LINUX="https://github.com/dianjixz/module_650_linux/archive/aad6cdc2a5f55f45a332d8d071e61785bff6a40f.zip"
+M5STACK_BSP_SUPPORT_LINUX_SHA256="xxxxxxxxxxxxxxxxxxxxxxxxxxx"
+M5STACK_BSP_SUPPORT_UBOOT="https://github.com/dianjixz/module_650_uboot/archive/37128afc29e48d635d6a2cf0b60740431f870161.zip"
+M5STACK_BSP_SUPPORT_UBOOT_SHA256="xxxxxxxxxxxxxxxxxxxxxxxxxxx"
