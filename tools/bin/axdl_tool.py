@@ -100,7 +100,7 @@ class USBSerialPort:
 
         # Find the USB device
         retry = 0
-        while retry < retry_count:
+        while True:
             try:
                 self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
                 if self.dev is not None:
