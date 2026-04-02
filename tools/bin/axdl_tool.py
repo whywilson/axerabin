@@ -29,11 +29,13 @@ from pathlib import Path
 import struct
 import sys
 import time
+from ctypes.util import find_library
 from tqdm import tqdm
 import xml.etree.ElementTree as ET
 import zipfile
 import tempfile
 import usb.core
+import usb.backend.libusb1
 import usb.util
 import glob
 
@@ -84,6 +86,28 @@ class USBSerialPort:
         self.is_open = False
         self._kernel_driver_detached = False
 
+    def _get_libusb_backend(self):
+        """Resolve a usable libusb backend, including common macOS Homebrew paths."""
+        candidates = [
+            find_library("usb-1.0"),
+            find_library("libusb-1.0"),
+            "/opt/homebrew/lib/libusb-1.0.dylib",
+            "/usr/local/lib/libusb-1.0.dylib",
+        ]
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+
+            backend = usb.backend.libusb1.get_backend(
+                find_library=lambda _name, fixed_path=candidate: fixed_path
+            )
+            if backend is not None:
+                self.logger.debug(f"Using libusb backend: {candidate}")
+                return backend
+
+        return None
+
     def open(self, retry_count=60):
         """
         Find the device, set configuration, claim the interface,
@@ -98,11 +122,22 @@ class USBSerialPort:
             f"Attempting to open USB device (VID=0x{self.vid:04X}, PID=0x{self.pid:04X})"
         )
 
+        backend = self._get_libusb_backend()
+        if backend is None:
+            msg = (
+                "No usable libusb backend found. Install libusb and ensure "
+                "libusb-1.0.dylib is accessible."
+            )
+            self.logger.error(msg)
+            raise ValueError(msg)
+
         # Find the USB device
         retry = 0
         while True:
             try:
-                self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
+                self.dev = usb.core.find(
+                    idVendor=self.vid, idProduct=self.pid, backend=backend
+                )
                 if self.dev is not None:
                     break
             except usb.core.USBError as e:
@@ -208,19 +243,28 @@ class USBSerialPort:
         """
         if not self.is_open:
             raise IOError("Cannot write: USBSerialPort is not open.")
-        try:
-            self.ep_out.write(data, timeout=timeout)
-            self.logger.debug(f"Wrote {len(data)} bytes to endpoint 0x01")
-            # Print hex format for debugging
-            if len(data) < 128:
-                self.logger.debug("> " + " ".join(f"{b:02X}" for b in data))
-            else:
-                self.logger.debug(
-                    f"> (First 128 bytes) {' '.join(f'{b:02X}' for b in data[:128])}"
-                )
-        except usb.core.USBError as e:
-            self.logger.error(f"Write failed: {e}")
-            raise
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.ep_out.write(data, timeout=timeout)
+                self.logger.debug(f"Wrote {len(data)} bytes to endpoint 0x01")
+                # Print hex format for debugging
+                if len(data) < 128:
+                    self.logger.debug("> " + " ".join(f"{b:02X}" for b in data))
+                else:
+                    self.logger.debug(
+                        f"> (First 128 bytes) {' '.join(f'{b:02X}' for b in data[:128])}"
+                    )
+                return
+            except usb.core.USBError as e:
+                if e.errno == 5 and attempt < max_retries:
+                    self.logger.warning(
+                        f"Write transient USB I/O error (attempt {attempt}/{max_retries}), retrying..."
+                    )
+                    time.sleep(0.2)
+                    continue
+                self.logger.error(f"Write failed: {e}")
+                raise
 
     def read(self, size=512, timeout=120000) -> bytes:
         """
@@ -234,18 +278,28 @@ class USBSerialPort:
         """
         if not self.is_open:
             raise IOError("Cannot read: USBSerialPort is not open.")
-        try:
-            data = self.ep_in.read(size, timeout=timeout)
-            self.logger.debug(f"Read {len(data)} bytes from endpoint 0x81")
-            # Print hex format for debugging
-            self.logger.debug(" ".join(f"{b:02X}" for b in data))
-            return bytes(data)
-        except usb.core.USBError as e:
-            # If it's a timeout, you might prefer returning an empty bytes object
-            self.logger.debug(f"Read USBError: {e}")
-            if e.errno == 110:  # 110 is typically a timeout on many systems
-                return b""
-            raise
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                data = self.ep_in.read(size, timeout=timeout)
+                self.logger.debug(f"Read {len(data)} bytes from endpoint 0x81")
+                # Print hex format for debugging
+                self.logger.debug(" ".join(f"{b:02X}" for b in data))
+                return bytes(data)
+            except usb.core.USBError as e:
+                # Timeout: return empty and let upper layer retry
+                self.logger.debug(f"Read USBError: {e}")
+                if e.errno == 110:
+                    return b""
+                if e.errno == 5 and attempt < max_retries:
+                    self.logger.warning(
+                        f"Read transient USB I/O error (attempt {attempt}/{max_retries}), retrying..."
+                    )
+                    time.sleep(0.2)
+                    continue
+                raise
+
+        return b""
 
 
 # ======= ax630tool =======
@@ -483,9 +537,23 @@ class AXDLTool:
         """Repeatedly send 0x3C until receiving BSL_REP_VER."""
         max_tries = 10
         for attempt in range(max_tries):
-            port.write(bytes([CMD_HANDSHAKE_BYTE] * 3))
+            try:
+                port.write(bytes([CMD_HANDSHAKE_BYTE] * 3))
+            except (usb.core.USBError, IOError) as e:
+                logger.warning(
+                    f"{stage_name} handshake attempt {attempt+1}: write error: {e}"
+                )
+                time.sleep(0.2)
+                continue
             time.sleep(0.1)
-            resp = port.read(512, timeout=2000)
+            try:
+                resp = port.read(512, timeout=2000)
+            except (usb.core.USBError, IOError) as e:
+                logger.warning(
+                    f"{stage_name} handshake attempt {attempt+1}: read error: {e}"
+                )
+                time.sleep(0.2)
+                continue
             if not resp:
                 logger.debug(f"{stage_name} handshake attempt {attempt+1}: no data.")
                 continue
