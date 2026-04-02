@@ -807,15 +807,36 @@ class AXDLTool:
         """
         BSL_CMD_ENDED_DATA(0x03) => finalize.
         """
-        pkt = self.build_packet(BSL_CMD_ENDED_DATA)
-        port.write(pkt)
-        resp = port.read(512, timeout=120000)
-        parsed = self.parse_packet(resp)
-        if not (parsed and parsed[0] == BSL_REP_ACK):
-            logger.error(f"No ACK after ENDED_DATA for '{part_id}'.")
-            return False
-        else:
-            return True
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            pkt = self.build_packet(BSL_CMD_ENDED_DATA)
+            port.write(pkt)
+
+            deadline = time.time() + 180
+            while time.time() < deadline:
+                resp = port.read(512, timeout=2000)
+                if not resp:
+                    continue
+
+                parsed = self.parse_packet(resp)
+                if not parsed:
+                    continue
+
+                if parsed[0] == BSL_REP_ACK:
+                    return True
+
+                if parsed[0] == BSL_REP_FLASH_DATA:
+                    logger.debug(
+                        f"ENDED_DATA '{part_id}' got FLASH_DATA status, waiting for ACK..."
+                    )
+                    continue
+
+            logger.warning(
+                f"No ACK after ENDED_DATA for '{part_id}' (attempt {attempt}/{max_retries}), retrying..."
+            )
+
+        logger.error(f"No ACK after ENDED_DATA for '{part_id}'.")
+        return False
 
     def erase_partition(self, port, logger, part_id: str):
         """
